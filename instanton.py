@@ -1,6 +1,4 @@
 import numpy as np
-from scipy.optimize import minimize_scalar
-from scipy.special import erf
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
@@ -16,52 +14,14 @@ def compute_composite_macro_factor(macro_df):
     return factor
 
 def double_well_potential(x, a=1.0, b=1.0):
-    """
-    Double well potential: V(x) = a * (x^2 - b^2)^2
-    Local minima at x = ±b, barrier at x = 0.
-    """
+    """Double well potential: V(x) = a * (x^2 - b^2)^2"""
     return a * (x**2 - b**2)**2
-
-def instanton_action(returns, macro_factor, barrier_scale=0.5):
-    """
-    Compute the instanton action S = ∫ sqrt(2 * (V(x) - E)) dx,
-    where E is the energy of the system.
-    """
-    # Fit a double-well potential to the returns distribution
-    if len(returns) < 5:
-        return 0.0
-    # Estimate parameters from data
-    std = np.std(returns)
-    mean = np.mean(returns)
-    # Scale parameters
-    b = barrier_scale * std  # location of minima
-    a = 1.0 / (b**4)  # scale such that barrier height ~ 1
-    # Find the maximum of the potential (barrier)
-    # The barrier is at x = 0, so V(0) = a * b^4
-    V_barrier = a * b**4
-    # Current state energy (using the last return)
-    current_x = returns[-1] - mean
-    # Energy = V(current_x) (assuming zero kinetic energy)
-    E = double_well_potential(current_x, a, b)
-    # If energy is above barrier, no tunneling (instanton not valid)
-    if E >= V_barrier:
-        return 0.0
-    # Compute action: S = ∫_{x1}^{x2} sqrt(2 * (V(x) - E)) dx
-    # Numerically integrate using the turning points
-    # Turning points: V(x) = E
-    # This is a quartic equation; we can find roots numerically
-    # For simplicity, we'll approximate the action using a Gaussian approximation
-    # near the barrier peak
-    # S ≈ (π/2) * sqrt(2 * V_barrier) * exp(-∫_{0}^{x_t} sqrt(2*(V-E)) dx)
-    # This is complex. We'll use a simplified heuristic:
-    # Action is proportional to (V_barrier - E) / barrier_scale
-    action = (V_barrier - E) / (barrier_scale * std + 1e-8)
-    return max(0.0, min(10.0, action))
 
 def instanton_score(returns, macro_df, n_minima=3, barrier_scale=0.5):
     """
     Compute per-ETF instanton transition score.
-    Higher score = higher tunneling amplitude (likely regime shift).
+    Score = distance from current state to barrier peak (normalised by width).
+    Higher score = closer to barrier = more likely to tunnel.
     """
     if len(returns) < 5 or macro_df is None or len(macro_df) < 5:
         return 0.0
@@ -77,9 +37,24 @@ def instanton_score(returns, macro_df, n_minima=3, barrier_scale=0.5):
         return 0.0
     # Compute macro factor
     macro_factor = compute_composite_macro_factor(macro_df)
-    # Compute instanton action
-    action = instanton_action(returns, macro_factor, barrier_scale)
-    # Transition amplitude = exp(-S) / (1 + exp(-S))
-    # This is the probability of tunneling
-    amplitude = np.exp(-action) / (1 + np.exp(-action))
-    return float(amplitude)
+    # Use macro factor to adjust barrier scale
+    adjusted_barrier = barrier_scale * (1 + macro_factor[-1] * 0.5)
+    # Standardise returns
+    returns_std = np.std(returns)
+    if returns_std < 1e-8:
+        return 0.0
+    returns_norm = returns / returns_std
+    # Current position (last return)
+    current_x = returns_norm[-1]
+    # Barrier position (at x=0 for double well)
+    barrier_x = 0.0
+    # Distance from current position to barrier (normalised)
+    distance_to_barrier = abs(current_x - barrier_x)
+    # Width of the well (where the minima are)
+    well_width = 1.0  # normalised
+    # Score: how close to barrier relative to well width
+    # Higher score = closer to barrier = more likely to tunnel
+    score = 1.0 - min(1.0, distance_to_barrier / well_width)
+    # Add a small random variation based on ticker to break ties
+    # (we'll do this outside, in train.py)
+    return float(score)
